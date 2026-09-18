@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set(NAF_VERSION "@PROJECT_VERSION@")
+set(NAF_FORMAT_REVISION "@NAF_FORMAT_REVISION@")
+
+include("${CMAKE_CURRENT_LIST_DIR}/NAFTargets.cmake")
+
+check_required_components(NAF)
