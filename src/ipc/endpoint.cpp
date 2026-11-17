@@ -129,10 +129,17 @@ class PipeListener final : public Listener {
   PipeListener(std::string endpoint, EndpointOptions options)
       : endpoint_(std::move(endpoint)), options_(options) {}
 
-  ~PipeListener() override { (void)close(); }
+  ~PipeListener() override {
+    (void)close();
+    // No thread is accepting any more; the armed instance is released here so
+    // the endpoint name is free for the next owner.
+    release_pending();
+  }
 
   Status open() {
-    Status status = arm();
+    // The first instance claims the endpoint: it fails when another listener
+    // already owns the name, so two coordinators never serve one endpoint.
+    Status status = arm(true);
     if (!status.is_ok()) return status;
     return Status::ok();
   }
@@ -142,7 +149,7 @@ class PipeListener final : public Listener {
       return Status::error(StatusCode::TransportFailure, "listener is closed");
     }
     if (pending_.load() == nullptr) {
-      Status status = arm();
+      Status status = arm(false);
       if (!status.is_ok()) return status;
     }
     if (closed_.load()) {
@@ -192,9 +199,12 @@ class PipeListener final : public Listener {
       (void)CloseHandle(handle);
       return Status::error(StatusCode::TransportFailure, "listener was closed during accept");
     }
-    // Ownership of the handle moves to the connection; the next accept arms a
-    // fresh instance on demand.
+    // Ownership of the handle moves to the connection. The next instance is
+    // armed at once, while this one is still open, so the endpoint name never
+    // lapses while the listener is open (if arming fails here, the next accept
+    // arms one on demand).
     pending_.store(nullptr);
+    (void)arm(false);
     return std::unique_ptr<Stream>(new PipeStream(handle));
   }
 
@@ -214,16 +224,18 @@ class PipeListener final : public Listener {
   [[nodiscard]] const std::string& endpoint() const noexcept override { return endpoint_; }
 
  private:
-  HANDLE create_instance() const {
+  HANDLE create_instance(bool first) const {
     const std::wstring path = pipe_path(endpoint_);
-    return CreateNamedPipeW(path.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+    const DWORD open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+                            (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
+    return CreateNamedPipeW(path.c_str(), open_mode,
                             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                             static_cast<DWORD>(options_.backlog), options_.write_buffer_bytes,
                             options_.read_buffer_bytes, 0, nullptr);
   }
 
-  Status arm() {
-    const HANDLE handle = create_instance();
+  Status arm(bool first) {
+    const HANDLE handle = create_instance(first);
     if (handle == INVALID_HANDLE_VALUE) {
       return Status::error(StatusCode::TransportFailure, "CreateNamedPipe failed");
     }

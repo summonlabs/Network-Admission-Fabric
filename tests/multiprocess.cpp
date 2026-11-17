@@ -350,3 +350,29 @@ NAF_TEST(multiprocess, a_second_coordinator_process_is_independent) {
   NAF_CHECK(daemon_a.kill());
   NAF_CHECK(daemon_b.kill());
 }
+
+#if defined(_WIN32)
+NAF_TEST(multiprocess, a_second_listener_cannot_take_a_live_endpoint) {
+  const std::string endpoint = unique_endpoint("owned");
+  bool first_created = false;
+  bool second_created = true;
+  bool rebound = false;
+  {
+    auto first = naf::ipc::create_listener(endpoint, naf::ipc::EndpointOptions{});
+    first_created = first.has_value();
+    // A second coordinator must never serve the endpoint a live one owns: its
+    // listener is refused instead of taking connections meant for the first.
+    auto second = naf::ipc::create_listener(endpoint, naf::ipc::EndpointOptions{});
+    second_created = second.has_value();
+  }
+  {
+    // Once the owner's listener is gone the endpoint can be bound again, which
+    // is what a restarted coordinator does.
+    auto again = naf::ipc::create_listener(endpoint, naf::ipc::EndpointOptions{});
+    rebound = again.has_value();
+  }
+  NAF_CHECK(first_created);
+  NAF_CHECK(!second_created);
+  NAF_CHECK(rebound);
+}
+#endif
